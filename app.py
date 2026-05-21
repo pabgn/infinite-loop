@@ -9,7 +9,12 @@ or in development:
 
 import hashlib
 import json
+import mimetypes
 import threading
+
+# python:slim doesn't ship /etc/mime.types — register the essentials manually
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
 
 from flask import Flask, jsonify, render_template, request, send_file, Response
 
