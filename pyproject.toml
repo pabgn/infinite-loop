@@ -1,0 +1,21 @@
+[project]
+name = "infinite-loop"
+version = "2.0.0"
+description = "Eternal Music Engine — analyzes a track and plays forever with coherent jumps."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "Flask>=3.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "librosa>=0.10",
+    "yt-dlp>=2024.1.0",
+    "pydub>=0.25",
+    "matplotlib>=3.7",
+]
+
+[project.scripts]
+infinite-loop = "app:main"
+
+[tool.setuptools]
+packages = ["infinite_loop"]

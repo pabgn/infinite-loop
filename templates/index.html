@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>INFINITE LOOP</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Bebas+Neue&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<header class="header">
+  <div class="logo">INFINITE LOOP</div>
+  <div class="tagline">
+    Motor de repetición eterna<br>
+    Análisis musical · Saltos coherentes · Progresión perpetua
+  </div>
+</header>
+
+<main class="main">
+
+  <!-- URL Input -->
+  <section class="url-section">
+    <label class="url-label" for="url-input">URL de YouTube</label>
+    <div class="url-row">
+      <input type="text" id="url-input"
+        placeholder="https://www.youtube.com/watch?v=..."
+        autocomplete="off" spellcheck="false">
+      <button id="analyze-btn">ANALIZAR</button>
+    </div>
+    <div class="error-msg" id="error-msg"></div>
+  </section>
+
+  <!-- Progress -->
+  <section class="progress-section" id="progress-section">
+    <div class="progress-msg" id="progress-msg">Iniciando análisis...</div>
+    <div class="progress-bar-outer">
+      <div class="progress-bar-inner" id="progress-bar"></div>
+    </div>
+  </section>
+
+  <!-- Player -->
+  <section class="player-section" id="player-section">
+
+    <!-- 1. Song identity -->
+    <div class="track-meta">
+      <img class="thumb" id="thumb" src="" alt="">
+      <div>
+        <div class="track-title" id="track-title">—</div>
+        <div class="track-info" id="track-info">—</div>
+      </div>
+    </div>
+
+    <!-- 2. Playback controls + live stats -->
+    <div class="controls">
+      <button class="btn-play" id="play-btn">▶</button>
+      <div class="time-display" id="time-display">0:00</div>
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-label">Tempo</div>
+          <div class="stat-value accent" id="stat-tempo">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Beat</div>
+          <div class="stat-value" id="stat-beat">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Similitud</div>
+          <div class="stat-value accent2" id="stat-sim">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Sección</div>
+          <div class="stat-value" id="stat-mode">—</div>
+        </div>
+      </div>
+      <div class="jump-counter">
+        Saltos
+        <strong id="jump-count">0</strong>
+      </div>
+    </div>
+
+    <!-- 3. Circular jump map -->
+    <div class="circle-viz">
+      <div class="circle-viz-header">
+        <span class="circle-viz-title">Mapa circular — la canción de principio a fin</span>
+        <div class="circle-viz-actions">
+          <button class="pe-btn accent-btn" onclick="peEnableAll()">Activar todos</button>
+          <button class="pe-btn danger" onclick="peDisableAll()">Desactivar todos</button>
+        </div>
+      </div>
+      <div class="circle-wrap">
+        <canvas id="circle-canvas"></canvas>
+      </div>
+      <div class="pe-legend">
+        <span><i style="background:#e8ff47"></i> Salto activo</span>
+        <span><i style="background:#333"></i> Desactivado</span>
+        <span><i style="background:#ff4d6d"></i> Posición / origen</span>
+        <span><i style="background:#fff"></i> Salto en curso</span>
+      </div>
+      <div class="pe-info" id="pe-info">Click en un arco para activar/desactivar ese salto · click en el borde para saltar a esa parte.</div>
+    </div>
+
+    <!-- 4. Waveform / energy timeline -->
+    <canvas id="beat-canvas"></canvas>
+
+    <!-- 5. Active sliders (unused ones removed) -->
+    <div class="sliders">
+      <div class="slider-group">
+        <label>Similaridad mínima <span id="val-sim">88%</span></label>
+        <input type="range" id="sl-sim" min="60" max="98" value="88">
+      </div>
+      <div class="slider-group">
+        <label>Mínimo entre saltos <span id="val-gap">128 beats</span></label>
+        <input type="range" id="sl-gap" min="16" max="256" value="128">
+      </div>
+      <div class="slider-group">
+        <label>Ajuste de destino <span id="val-offset">0ms</span></label>
+        <input type="range" id="sl-offset" min="-300" max="300" value="0" step="10">
+      </div>
+    </div>
+
+    <!-- 6. Jump log -->
+    <div class="jump-log" id="jump-log"></div>
+
+    <audio id="audio-el" preload="auto"></audio>
+  </section>
+
+</main>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

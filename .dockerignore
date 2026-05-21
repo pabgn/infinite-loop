@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.DS_Store
+.idea/
+.vscode/
+*.mp3
+*.wav
+infinite_loop_cache/
+patterns/

@@ -1,0 +1,26 @@
+# Fly.io config — alternative to Render (~$3/month, no sleep, persistent cache)
+# Deploy: fly launch --no-deploy, then fly deploy
+app = "infinite-loop"
+primary_region = "mad"
+
+[build]
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[env]
+  INFINITE_LOOP_CACHE = "/cache"
+
+# Uncomment after running: fly volumes create infinite_loop_cache --size 3
+# [[mounts]]
+#   source = "infinite_loop_cache"
+#   destination = "/cache"

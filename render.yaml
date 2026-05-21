@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: infinite-loop
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: INFINITE_LOOP_CACHE
+        value: /tmp/infinite_loop_cache
