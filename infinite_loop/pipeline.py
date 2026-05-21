@@ -56,13 +56,20 @@ def analyze_track(url: str, url_hash: str):
 
         if not audio_path.exists():
             ydl_opts = {
-                "format": "bestaudio/best",
+                # Permissive chain: audio-only → any combined → absolute worst
+                # (ffmpeg extracts audio regardless of what we download)
+                "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best[ext=mp4]/best/worst",
                 "outtmpl": str(CACHE_DIR / f"{url_hash}.%(ext)s"),
                 "postprocessors": [{
                     "key": "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
                     "preferredquality": "192",
                 }],
+                # tv_embedded bypasses format restrictions on datacenter IPs;
+                # web_creator is the fallback if embedded is unavailable.
+                "extractor_args": {
+                    "youtube": {"player_client": ["tv_embedded", "web_creator", "web"]}
+                },
                 "quiet": True,
                 "no_warnings": True,
             }
