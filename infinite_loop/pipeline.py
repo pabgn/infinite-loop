@@ -63,9 +63,6 @@ def analyze_track(url: str, url_hash: str):
                     "preferredcodec": "mp3",
                     "preferredquality": "192",
                 }],
-                # Use the iOS client — avoids bot-detection on most tracks
-                # without requiring cookies.
-                "extractor_args": {"youtube": {"player_client": ["ios"]}},
                 "quiet": True,
                 "no_warnings": True,
             }
