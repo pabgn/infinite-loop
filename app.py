@@ -19,7 +19,7 @@ mimetypes.add_type("text/css", ".css")
 from flask import Flask, jsonify, render_template, request, send_file, Response
 
 from infinite_loop.config import CACHE_DIR, DEBUG, HOST, PORT, analysis_status
-from infinite_loop.pipeline import analyze_track
+from infinite_loop.pipeline import analyze_track, _ensure_cookies_file
 
 app = Flask(__name__)
 
@@ -82,6 +82,36 @@ def api_audio(url_hash):
     if not audio_path.exists():
         return jsonify({"error": "Not found"}), 404
     return send_file(str(audio_path), mimetype="audio/mpeg")
+
+
+@app.route("/api/debug/formats")
+def api_debug_formats():
+    """Temporary: list available yt-dlp formats from the server's perspective."""
+    url = request.args.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "pass ?url=..."}), 400
+    import yt_dlp, io
+    out = io.StringIO()
+    opts = {
+        "listformats": True,
+        "quiet": False,
+        "no_warnings": False,
+        "logger": type("L", (), {
+            "debug": lambda s, m: out.write(m + "\n"),
+            "info":  lambda s, m: out.write(m + "\n"),
+            "warning": lambda s, m: out.write("WARN: " + m + "\n"),
+            "error": lambda s, m: out.write("ERR: " + m + "\n"),
+        })(),
+    }
+    cookies_file = _ensure_cookies_file()
+    if cookies_file:
+        opts["cookiefile"] = cookies_file
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=False)
+    except Exception as e:
+        out.write(f"\nException: {e}")
+    return jsonify({"cookies_file": cookies_file, "output": out.getvalue()})
 
 
 def main():
