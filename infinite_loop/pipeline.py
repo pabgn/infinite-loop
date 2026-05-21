@@ -1,9 +1,45 @@
 """Download + analysis pipeline (runs in a background thread)."""
 
 import json
+import os
+import tempfile
 
 from .analysis import analyze
 from .config import CACHE_DIR, analysis_status
+
+# Path to a persistent cookies file written once at startup from the env var.
+_COOKIES_FILE: str | None = None
+
+
+def _ensure_cookies_file() -> str | None:
+    """
+    Return a path to a Netscape-format cookies file, or None if not configured.
+
+    Reads YOUTUBE_COOKIES env var (full cookies.txt content) once and writes it
+    to a temp file that persists for the lifetime of the process.
+    """
+    global _COOKIES_FILE
+    if _COOKIES_FILE is not None:
+        return _COOKIES_FILE
+
+    # Explicit file path takes priority (useful when mounting a secret file)
+    path = os.environ.get("YOUTUBE_COOKIES_PATH", "").strip()
+    if path and os.path.exists(path):
+        _COOKIES_FILE = path
+        return _COOKIES_FILE
+
+    # Inline cookies content stored as an env var
+    content = os.environ.get("YOUTUBE_COOKIES", "").strip()
+    if content:
+        f = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, prefix="yt_cookies_"
+        )
+        f.write(content)
+        f.close()
+        _COOKIES_FILE = f.name
+        return _COOKIES_FILE
+
+    return None
 
 
 def analyze_track(url: str, url_hash: str):
@@ -27,9 +63,17 @@ def analyze_track(url: str, url_hash: str):
                     "preferredcodec": "mp3",
                     "preferredquality": "192",
                 }],
+                # Use the iOS client — avoids bot-detection on most tracks
+                # without requiring cookies.
+                "extractor_args": {"youtube": {"player_client": ["ios"]}},
                 "quiet": True,
                 "no_warnings": True,
             }
+
+            cookies_file = _ensure_cookies_file()
+            if cookies_file:
+                ydl_opts["cookiefile"] = cookies_file
+
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 title = info.get("title", "Unknown")
@@ -44,7 +88,6 @@ def analyze_track(url: str, url_hash: str):
 
         # 2. Run v2 analysis
         def progress_cb(pct, msg):
-            # Map 0-100 into 20-95 range (download already done)
             mapped = 20 + int(pct * 0.75)
             status.update({"progress": mapped, "message": msg})
 
@@ -71,4 +114,3 @@ def analyze_track(url: str, url_hash: str):
             "message": f"Error: {str(e)}",
             "traceback": traceback.format_exc(),
         })
-
