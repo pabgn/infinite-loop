@@ -85,15 +85,8 @@ def analyze_track(url: str, url_hash: str):
         graph_path = CACHE_DIR / f"{url_hash}.json"
 
         if not audio_path.exists():
-            ydl_opts = {
-                # Prefer DASH audio (webm/m4a) over HLS — HLS fragments fail
-                # when the n-challenge isn't solved (empty file on datacenter IPs).
-                "format": (
-                    "bestaudio[protocol!=m3u8][protocol!=m3u8_native]"
-                    "/bestaudio"
-                    "/best[protocol!=m3u8][protocol!=m3u8_native]"
-                    "/best"
-                ),
+            base_opts = {
+                "format": "bestaudio/best",
                 "outtmpl": str(CACHE_DIR / f"{url_hash}.%(ext)s"),
                 "postprocessors": [{
                     "key": "FFmpegExtractAudio",
@@ -104,27 +97,43 @@ def analyze_track(url: str, url_hash: str):
                 "no_warnings": True,
             }
 
-            # yt-dlp needs a JS runtime to solve YouTube's signature challenge.
+            # Strategy 1: android client — no n-challenge or signature solving needed,
+            # works on datacenter IPs for public videos. Must NOT have cookies set
+            # (yt-dlp skips android entirely when any cookiefile/cookiesfrombrowser is present).
+            android_opts = {**base_opts, "extractor_args": {"youtube": {"player_client": ["android"]}}}
+
+            # Strategy 2: web client with cookies — for age-restricted / sign-in-required videos.
+            web_opts = {**base_opts}
+            cookies_file = _ensure_cookies_file()
+            if cookies_file:
+                web_opts["cookiefile"] = cookies_file
+            elif not os.environ.get("YOUTUBE_COOKIES") and not os.environ.get("YOUTUBE_COOKIES_PATH"):
+                for browser in ("safari", "chrome", "firefox", "chromium"):
+                    if _browser_available(browser):
+                        web_opts["cookiesfrombrowser"] = (browser,)
+                        break
             _node = _find_executable("node", [
                 os.path.expanduser("~/.nvm/versions/node"),
                 "/usr/local/bin", "/opt/homebrew/bin", "/usr/bin",
             ])
             if _node:
-                ydl_opts["js_runtimes"] = {"node": {"path": _node}}
-            ydl_opts["remote_components"] = ["ejs:github"]
+                web_opts["js_runtimes"] = {"node": {"path": _node}}
+            web_opts["remote_components"] = ["ejs:github"]
 
-            cookies_file = _ensure_cookies_file()
-            if cookies_file:
-                ydl_opts["cookiefile"] = cookies_file
-            elif not os.environ.get("YOUTUBE_COOKIES") and not os.environ.get("YOUTUBE_COOKIES_PATH"):
-                # Local dev fallback: read cookies from the system browser
-                for browser in ("safari", "chrome", "firefox", "chromium"):
-                    if _browser_available(browser):
-                        ydl_opts["cookiesfrombrowser"] = (browser,)
-                        break
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
+            info = None
+            for attempt, ydl_opts in enumerate([android_opts, web_opts]):
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                    break
+                except Exception as e:
+                    if attempt == 0:
+                        # Clean up any partial file before retrying
+                        for f in CACHE_DIR.glob(f"{url_hash}.*"):
+                            try: f.unlink()
+                            except: pass
+                        continue
+                    raise
                 title = info.get("title", "Unknown")
                 duration = info.get("duration", 0)
                 thumbnail = info.get("thumbnail", "")
