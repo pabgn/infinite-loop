@@ -23,3 +23,5 @@ infinite_loop_cache/
 
 # Fly.io
 .fly/
+.claude/
+*.msaf_tmp*

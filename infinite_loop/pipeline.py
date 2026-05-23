@@ -42,6 +42,36 @@ def _ensure_cookies_file() -> str | None:
     return None
 
 
+def _find_executable(name: str, extra_dirs: list) -> str | None:
+    """Return the full path to an executable, searching PATH + extra_dirs."""
+    import shutil, glob
+    found = shutil.which(name)
+    if found:
+        return found
+    for d in extra_dirs:
+        # Support nvm-style versioned dirs: ~/.nvm/versions/node/*/bin/node
+        for candidate in glob.glob(os.path.join(d, "*", "bin", name)) + [os.path.join(d, name)]:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
+def _browser_available(browser: str) -> bool:
+    """Return True if the browser's cookie store exists on this machine."""
+    import platform
+    home = os.path.expanduser("~")
+    paths = {
+        "safari":   [f"{home}/Library/Cookies/Cookies.binarycookies"],
+        "chrome":   [f"{home}/Library/Application Support/Google/Chrome",
+                     f"{home}/.config/google-chrome"],
+        "firefox":  [f"{home}/Library/Application Support/Firefox/Profiles",
+                     f"{home}/.mozilla/firefox"],
+        "chromium": [f"{home}/Library/Application Support/Chromium",
+                     f"{home}/.config/chromium"],
+    }
+    return any(os.path.exists(p) for p in paths.get(browser, []))
+
+
 def analyze_track(url: str, url_hash: str):
     """Full pipeline v2: download → analyze → build jump graph"""
     try:
@@ -56,27 +86,35 @@ def analyze_track(url: str, url_hash: str):
 
         if not audio_path.exists():
             ydl_opts = {
-                # Permissive chain: audio-only → any combined → absolute worst
-                # (ffmpeg extracts audio regardless of what we download)
-                "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best[ext=mp4]/best/worst",
+                "format": "bestaudio/best",
                 "outtmpl": str(CACHE_DIR / f"{url_hash}.%(ext)s"),
                 "postprocessors": [{
                     "key": "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
                     "preferredquality": "192",
                 }],
-                # tv_embedded bypasses format restrictions on datacenter IPs;
-                # web_creator is the fallback if embedded is unavailable.
-                "extractor_args": {
-                    "youtube": {"player_client": ["tv_embedded", "web_creator", "web"]}
-                },
                 "quiet": True,
                 "no_warnings": True,
             }
 
+            # yt-dlp needs a JS runtime to solve YouTube's signature challenge.
+            _node = _find_executable("node", [
+                os.path.expanduser("~/.nvm/versions/node"),
+                "/usr/local/bin", "/opt/homebrew/bin", "/usr/bin",
+            ])
+            if _node:
+                ydl_opts["js_runtimes"] = {"node": {"path": _node}}
+            ydl_opts["remote_components"] = ["ejs:github"]
+
             cookies_file = _ensure_cookies_file()
             if cookies_file:
                 ydl_opts["cookiefile"] = cookies_file
+            elif not os.environ.get("YOUTUBE_COOKIES") and not os.environ.get("YOUTUBE_COOKIES_PATH"):
+                # Local dev fallback: read cookies from the system browser
+                for browser in ("safari", "chrome", "firefox", "chromium"):
+                    if _browser_available(browser):
+                        ydl_opts["cookiesfrombrowser"] = (browser,)
+                        break
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)

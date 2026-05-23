@@ -7,9 +7,14 @@ validation-image and sample-MP3 rendering helpers.
 
 import numpy as np
 import librosa
+import scipy
 from scipy.spatial.distance import cdist
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks
+
+# scipy.inf was removed in 1.12; msaf's pymf submodule still references it
+if not hasattr(scipy, 'inf'):
+    scipy.inf = float('inf')
 
 
 # ──────────────────────────────────────────────────────────────
@@ -79,19 +84,36 @@ def beat_context_features(
 
 
 # ──────────────────────────────────────────────────────────────
-# 3. FOOTE NOVELTY — STRUCTURAL SEGMENTATION
+# 3. STRUCTURAL SEGMENTATION
 # ──────────────────────────────────────────────────────────────
+
+def build_recurrence_matrix(features_norm: np.ndarray, k: int = 5) -> np.ndarray:
+    """
+    Lag-based recurrence matrix via librosa.
+    Captures repeating musical structures better than raw cosine SSM,
+    because it only links each beat to its k nearest neighbors.
+    features_norm: (n_beats, features) — L2-normalized rows.
+    """
+    k_actual = max(2, min(k, features_norm.shape[0] // 8))
+    return librosa.segment.recurrence_matrix(
+        features_norm.T,          # librosa expects (features, time)
+        k=k_actual,
+        mode='affinity',
+        metric='cosine',
+        sparse=False,
+        sym=True,
+    )
+
 
 def foote_novelty(similarity_matrix: np.ndarray, kernel_size: int = 8) -> np.ndarray:
     """
-    Foote novelty function: detects structural boundaries.
-    Convolves a checkerboard kernel along the diagonal of the SSM.
-    High novelty = structural boundary (verse→chorus, chorus→bridge, etc.)
+    Foote novelty: convolves a checkerboard kernel along the diagonal.
+    Works on any square matrix (cosine SSM or recurrence matrix).
+    High novelty = structural boundary.
     """
     n = similarity_matrix.shape[0]
     k = kernel_size
 
-    # Checkerboard kernel
     kernel = np.ones((k, k))
     kernel[:k//2, :k//2] = 1
     kernel[k//2:, k//2:] = 1
@@ -105,7 +127,6 @@ def foote_novelty(similarity_matrix: np.ndarray, kernel_size: int = 8) -> np.nda
         if block.shape == kernel.shape:
             novelty[i] = np.sum(block * kernel)
 
-    # Smooth and normalize
     novelty = gaussian_filter1d(novelty, sigma=2)
     novelty = (novelty - novelty.min()) / (novelty.max() - novelty.min() + 1e-8)
     return novelty
@@ -114,7 +135,112 @@ def foote_novelty(similarity_matrix: np.ndarray, kernel_size: int = 8) -> np.nda
 def detect_segments(novelty: np.ndarray, min_distance: int = 8) -> np.ndarray:
     """Find segment boundaries from novelty peaks."""
     peaks, _ = find_peaks(novelty, distance=min_distance, height=0.3)
-    return peaks  # beat indices of boundaries
+    return peaks
+
+
+# ──────────────────────────────────────────────────────────────
+# 3b. SEMANTIC SEGMENT LABELING  (via msaf)
+# ──────────────────────────────────────────────────────────────
+
+# Maps semantic label → archetype index used in the jump graph bonus
+LABEL_ARCHETYPES = {
+    'INTRO':  0,
+    'VERSE':  1,
+    'CHORUS': 2,
+    'BRIDGE': 3,
+    'OUTRO':  0,
+}
+
+
+def msaf_to_segments(
+    msaf_boundaries: np.ndarray,
+    msaf_labels: np.ndarray,
+    beat_times: np.ndarray,
+    energy_arc: np.ndarray,
+    n_beats: int,
+) -> tuple:
+    """
+    Convert msaf time-based boundaries + cluster labels to beat-level segments.
+
+    msaf_labels are cluster IDs (ints): same ID = same type of section.
+    We name them semantically using position + repetition count:
+      - First segment                          → INTRO
+      - Last segment (unique cluster)          → OUTRO
+      - Cluster that repeats most, mid-song    → CHORUS
+      - Short unique segment in the middle     → BRIDGE
+      - Everything else                        → VERSE
+    Returns (segment_boundaries_beat_idx, segments_info).
+    """
+    from collections import Counter
+
+    # Snap msaf boundary times to nearest beat index
+    beat_boundaries = set()
+    for t in msaf_boundaries[1:]:  # msaf includes 0.0 as first boundary
+        idx = int(np.argmin(np.abs(beat_times - t)))
+        if 0 < idx < n_beats:
+            beat_boundaries.add(idx)
+    beat_boundaries = np.array(sorted(beat_boundaries), dtype=int)
+
+    boundaries_full = np.concatenate([[0], beat_boundaries, [n_beats]])
+    n_segs = len(boundaries_full) - 1
+
+    # Align msaf cluster labels to our beat-snapped segments
+    # (msaf may have a different segment count if boundaries didn't snap cleanly)
+    cluster_ids = []
+    for i in range(n_segs):
+        seg_mid_time = float(beat_times[int((boundaries_full[i] + boundaries_full[i+1]) / 2)])
+        # Find which msaf segment contains this midpoint
+        msaf_idx = np.searchsorted(msaf_boundaries, seg_mid_time, side='right') - 1
+        msaf_idx = int(np.clip(msaf_idx, 0, len(msaf_labels) - 1))
+        cluster_ids.append(int(msaf_labels[msaf_idx]))
+
+    # Count repetitions per cluster
+    cluster_counts = Counter(cluster_ids)
+
+    # Decide which cluster is CHORUS: the most-repeated one that first appears
+    # after the first segment (not the intro cluster)
+    intro_cluster = cluster_ids[0]
+    outro_cluster = cluster_ids[-1]
+    repeating = {cid: cnt for cid, cnt in cluster_counts.items()
+                 if cnt >= 2 and cid != intro_cluster}
+    if repeating:
+        # Among repeating clusters, pick the one with most occurrences
+        # (tie-break: earliest non-intro appearance)
+        chorus_cluster = max(repeating, key=lambda c: (repeating[c], -cluster_ids.index(c)))
+    else:
+        chorus_cluster = None
+
+    # Build segments_info with semantic labels
+    segments_info = []
+    for i in range(n_segs):
+        s, e = int(boundaries_full[i]), int(boundaries_full[i + 1])
+        cid = cluster_ids[i]
+        dur = float(beat_times[min(e, n_beats-1)] - beat_times[s])
+        mean_dur = float(beat_times[min(int(boundaries_full[-1]), n_beats-1)] -
+                         beat_times[0]) / max(1, n_segs)
+
+        if i == 0:
+            label = 'INTRO'
+        elif i == n_segs - 1 and cluster_counts[cid] == 1:
+            label = 'OUTRO'
+        elif cid == chorus_cluster:
+            label = 'CHORUS'
+        elif cluster_counts[cid] == 1 and dur < mean_dur * 0.65:
+            label = 'BRIDGE'
+        else:
+            label = 'VERSE'
+
+        segments_info.append({
+            "start":      s,
+            "end":        e,
+            "start_time": float(beat_times[s]),
+            "end_time":   float(beat_times[min(e, n_beats - 1)]),
+            "energy":     float(energy_arc[s:e].mean()),
+            "label":      label,
+            "cluster":    cid,
+        })
+
+    return beat_boundaries, segments_info
 
 
 # ──────────────────────────────────────────────────────────────
@@ -176,27 +302,19 @@ def build_jump_graph(
     beat_times: np.ndarray,
     is_downbeat: np.ndarray,
     energy_arc: np.ndarray,
-    segments: np.ndarray,
+    beat_seg_archetypes: np.ndarray,
     K: int = 16,
-    min_sim: float = 0.55,
+    min_sim: float = 0.97,
 ) -> dict:
     """
-    Build jump graph with improvements:
-    - Downbeat-only jumps (jump only on beat 1 of a bar)
-    - Energy proximity bonus (prefer same-energy zone)
-    - Segment-crossing bonus (jumps between equivalent sections score higher)
-    - Minimum distance in beats
+    Build jump graph.
+    beat_seg_archetypes: per-beat archetype index (0=INTRO/OUTRO, 1=VERSE, 2=CHORUS, 3=BRIDGE)
+    derived from semantic labels — used for cross-section bonus.
     """
     n = len(beat_times)
-    MIN_DIST = 8  # minimum beats between source and target
+    MIN_DIST = 8
 
-    # Build segment membership per beat
-    seg_labels = np.zeros(n, dtype=int)
-    if len(segments) > 0:
-        boundaries = np.concatenate([[0], segments, [n]])
-        for seg_idx in range(len(boundaries) - 1):
-            s, e = boundaries[seg_idx], boundaries[seg_idx + 1]
-            seg_labels[s:e] = seg_idx % 4  # wrap to 4 archetypes (intro/verse/chorus/bridge)
+    seg_labels = beat_seg_archetypes
 
     jump_graph = {}
     for i in range(n):
@@ -322,9 +440,10 @@ def analyze(audio_path: str, status_cb=None) -> dict:
     similarity = ctx_norm @ ctx_norm.T  # (n, n)
     np.fill_diagonal(similarity, 0)    # no self-jumps
 
-    update(65, "Detectando estructura musical (Foote novelty)...")
-    novelty = foote_novelty(similarity, kernel_size=min(16, n_beats // 4))
-    segment_boundaries = detect_segments(novelty, min_distance=max(4, n_beats // 12))
+    update(65, "Detectando estructura musical (recurrencia + Foote novelty)...")
+    recurrence = build_recurrence_matrix(ctx_norm, k=5)
+    novelty = foote_novelty(recurrence, kernel_size=min(16, n_beats // 4))
+    foote_boundaries = detect_segments(novelty, min_distance=max(4, n_beats // 12))
 
     update(75, "Detectando downbeats (compases 4/4)...")
     is_downbeat = detect_downbeats(beat_times, tempo_val)
@@ -332,24 +451,48 @@ def analyze(audio_path: str, status_cb=None) -> dict:
     update(80, "Calculando arco de energía...")
     energy_arc = compute_energy_arc(beat_rms)
 
+    update(83, "Detectando estructura musical con msaf (scluster)...")
+    try:
+        import msaf as _msaf
+        _boundaries_t, _labels = _msaf.process(
+            audio_path,
+            boundaries_id='scluster',
+            labels_id='scluster',
+            feature='pcp',
+            framesync=False,
+        )
+        segment_boundaries, segments_info = msaf_to_segments(
+            _boundaries_t, _labels, beat_times, energy_arc, n_beats
+        )
+        print(f"  msaf: {len(segments_info)} secciones — "
+              + ", ".join(f"{s['label']}({s['cluster']})" for s in segments_info))
+    except Exception as e:
+        print(f"  msaf no disponible ({e}), usando Foote novelty con etiquetas posicionales")
+        segment_boundaries = foote_boundaries
+        _fallback_labels = ["INTRO", "VERSE", "CHORUS", "BRIDGE"]
+        boundaries_tmp = np.concatenate([[0], segment_boundaries, [n_beats]])
+        segments_info = []
+        for idx in range(len(boundaries_tmp) - 1):
+            s, e = int(boundaries_tmp[idx]), int(boundaries_tmp[idx + 1])
+            segments_info.append({
+                "start": s, "end": e,
+                "start_time": float(beat_times[s]),
+                "end_time": float(beat_times[min(e, n_beats - 1)]),
+                "energy": float(energy_arc[s:e].mean()),
+                "label": _fallback_labels[idx % 4],
+                "cluster": idx % 4,
+            })
+
+    # Per-beat archetype array for the jump graph cross-section bonus
+    beat_seg_archetypes = np.zeros(n_beats, dtype=int)
+    for seg in segments_info:
+        arc = LABEL_ARCHETYPES.get(seg['label'], 1)
+        beat_seg_archetypes[seg['start']:seg['end']] = arc
+
     update(88, "Construyendo grafo de saltos mejorado...")
     jump_graph = build_jump_graph(
-        similarity, beat_times, is_downbeat, energy_arc, segment_boundaries, K=16
+        similarity, beat_times, is_downbeat, energy_arc, beat_seg_archetypes, K=16
     )
-
-    # Segment list with energy info for frontend
-    boundaries_full = np.concatenate([[0], segment_boundaries, [n_beats]])
-    segments_info = []
-    for idx in range(len(boundaries_full) - 1):
-        s, e = int(boundaries_full[idx]), int(boundaries_full[idx + 1])
-        segments_info.append({
-            "start": s,
-            "end": e,
-            "start_time": float(beat_times[s]),
-            "end_time": float(beat_times[min(e, n_beats - 1)]),
-            "energy": float(energy_arc[s:e].mean()),
-            "label": ["INTRO", "VERSE", "CHORUS", "BRIDGE"][idx % 4],
-        })
 
     update(95, "Preparando datos para el frontend...")
 
@@ -446,12 +589,13 @@ def generate_validation_image(result: dict, output_path: str):
     ax_ssm.set_xlabel("Beat index", color='#666', fontsize=8)
     ax_ssm.set_ylabel("Beat index", color='#666', fontsize=8)
 
-    # Add segment labels on top
+    # Add segment labels on top (use semantic labels from analysis)
     boundaries_full = [0] + list(boundaries) + [n]
-    labels = ["INTRO", "VERSE", "CHORUS", "BRIDGE"]
+    seg_list = result.get("segments", [])
     for idx in range(len(boundaries_full) - 1):
         mid = (boundaries_full[idx] + boundaries_full[idx + 1]) / 2
-        ax_ssm.text(mid, -2, labels[idx % 4], color='#ff4d6d',
+        lbl = seg_list[idx]['label'] if idx < len(seg_list) else '?'
+        ax_ssm.text(mid, -2, lbl, color='#ff4d6d',
                    fontsize=7, ha='center', va='bottom', fontweight='bold')
 
     # ── Panel 2: Novelty ──
@@ -461,7 +605,7 @@ def generate_validation_image(result: dict, output_path: str):
     ax_nov.plot(novelty, color='#e8ff47', lw=0.8)
     for b in boundaries:
         ax_nov.axvline(b, color='#ff4d6d', lw=1.2, alpha=0.8)
-    ax_nov.set_title("Foote Novelty — fronteras estructurales", color='#f0ede6', fontsize=9)
+    ax_nov.set_title("Foote Novelty sobre matriz de recurrencia — fronteras estructurales", color='#f0ede6', fontsize=9)
     ax_nov.set_xlabel("Beat", color='#666', fontsize=7)
     ax_nov.set_ylabel("Novelty", color='#666', fontsize=7)
     ax_nov.tick_params(colors='#444', labelsize=7)

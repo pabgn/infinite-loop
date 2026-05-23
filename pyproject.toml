@@ -12,6 +12,7 @@ dependencies = [
     "yt-dlp>=2024.1.0",
     "pydub>=0.25",
     "matplotlib>=3.7",
+    "msaf>=0.1.80",
 ]
 
 [project.scripts]

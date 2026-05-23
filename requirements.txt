@@ -7,3 +7,4 @@ yt-dlp>=2024.1.0
 pydub>=0.25
 matplotlib>=3.7
 gunicorn>=21.0
+msaf>=0.1.80
