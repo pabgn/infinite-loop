@@ -6,12 +6,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     gcc \
     nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download the yt-dlp EJS challenge solver so it's cached in the image
+RUN yt-dlp --remote-components ejs:github -o /dev/null -- "https://www.youtube.com/watch?v=jNQXAC9IVRw" 2>&1 || true
 
 COPY . .
 

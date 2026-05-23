@@ -86,7 +86,14 @@ def analyze_track(url: str, url_hash: str):
 
         if not audio_path.exists():
             ydl_opts = {
-                "format": "bestaudio/best",
+                # Prefer DASH audio (webm/m4a) over HLS — HLS fragments fail
+                # when the n-challenge isn't solved (empty file on datacenter IPs).
+                "format": (
+                    "bestaudio[protocol!=m3u8][protocol!=m3u8_native]"
+                    "/bestaudio"
+                    "/best[protocol!=m3u8][protocol!=m3u8_native]"
+                    "/best"
+                ),
                 "outtmpl": str(CACHE_DIR / f"{url_hash}.%(ext)s"),
                 "postprocessors": [{
                     "key": "FFmpegExtractAudio",
